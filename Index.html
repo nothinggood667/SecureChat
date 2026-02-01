@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SecureChat</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body>
+
+<div id="app-container">
+
+    <div id="pin-overlay">
+        <h2 style="color:white; margin:0;">SUCCESS!</h2>
+        <p style="color:#a1a1aa;">This is your Login PIN for this room.</p>
+        
+        <div class="pin-number" id="generated-pin">----</div>
+        
+        <div id="role-display" class="role-tag" style="background:#333; color:white;">ROLE</div>
+        
+        <button class="action-btn btn-login" style="margin-top:30px;" onclick="enterChatFromModal()">ENTER ROOM NOW</button>
+    </div>
+
+    <div id="auth-view">
+        <div class="brand">SecureChat</div>
+
+        <div class="tabs">
+            <button class="tab-btn active" onclick="showForm('login', this)">LOGIN</button>
+            <button class="tab-btn" onclick="showForm('join', this)">JOIN NEW</button>
+            <button class="tab-btn" onclick="showForm('create', this)">CREATE ROOM</button>
+        </div>
+
+        <div id="form-login" class="auth-form active">
+            <div class="input-group">
+                <label class="input-label">ROOM CODE</label>
+                <input type="text" id="log-room" class="main-input" placeholder="e.g. 1001">
+            </div>
+            <div class="input-group">
+                <label class="input-label">YOUR PIN</label>
+                <input type="number" id="log-pin" class="main-input" placeholder="4 or 5 digit PIN">
+            </div>
+            <button class="action-btn btn-login" onclick="loginUser()">LOGIN & ENTER</button>
+        </div>
+
+        <div id="form-join" class="auth-form">
+            <div class="input-group">
+                <label class="input-label">DISPLAY NAME</label>
+                <input type="text" id="join-name" class="main-input" placeholder="Your Name">
+            </div>
+            <div class="input-group">
+                <label class="input-label">ROOM CODE TO JOIN</label>
+                <input type="text" id="join-room" class="main-input" placeholder="e.g. 1001">
+            </div>
+            <button class="action-btn btn-join" onclick="joinRoom()">GET MEMBER PIN</button>
+        </div>
+
+        <div id="form-create" class="auth-form">
+            <div class="input-group">
+                <label class="input-label">DISPLAY NAME</label>
+                <input type="text" id="create-name" class="main-input" placeholder="Your Name">
+            </div>
+            <div class="input-group">
+                <label class="input-label">NEW ROOM CODE</label>
+                <input type="text" id="create-room" class="main-input" placeholder="Create a code (e.g. MYROOM)">
+            </div>
+            <button class="action-btn btn-create" onclick="createRoom()">CREATE & GET ADMIN PIN</button>
+        </div>
+    </div>
+
+    <div id="chat-view">
+        <header>
+            <div class="room-info">
+                <h3>Room <span id="room-id-display">...</span> <span id="user-role-badge" class="status-badge badge-general">GENERAL</span></h3>
+            </div>
+            <div style="display:flex;">
+                <button id="btn-delete-room" class="header-btn" onclick="deleteRoom()" style="display:none; color:#ef4444;" title="Delete Room">
+                    <span class="material-icons-round">delete_forever</span>
+                </button>
+                <button class="header-btn" onclick="location.reload()" title="Logout">
+                    <span class="material-icons-round">logout</span>
+                </button>
+            </div>
+        </header>
+
+        <div id="messages-list"></div>
+
+        <div class="input-area" id="input-area">
+            <input type="text" id="msg-input" placeholder="Type a message..." autocomplete="off">
+            <button id="send-btn" onclick="sendMessage()">
+                <span class="material-icons-round">send</span>
+            </button>
+        </div>
+        
+        <div id="closed-overlay" style="display:none; position:absolute; bottom:0; width:100%; padding:20px; background:#ef4444; color:white; text-align:center; font-weight:bold;">
+            ROOM CLOSED
+        </div>
+    </div>
+
+</div>
+
+<script>
+    // --- FIREBASE CONFIGURATION ---
+    const firebaseConfig = {
+        apiKey: "AIzaSyAoRBhu4HLAXc5ZAhYKwwx44x7lI4eUagc",
+        authDomain: "taxation-8ebea.firebaseapp.com",
+        databaseURL: "https://taxation-8ebea-default-rtdb.firebaseio.com",
+        projectId: "taxation-8ebea",
+        storageBucket: "taxation-8ebea.appspot.com",
+    };
+
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // --- GLOBAL VARIABLES ---
+    let myPIN = "";
+    let myName = "";
+    let currentRoom = "";
+    let amIAdmin = false;
+
+    // --- UI TABS LOGIC ---
+    function showForm(formName, btn) {
+        // Hide all forms
+        document.querySelectorAll('.auth-form').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+        
+        // Show selected
+        document.getElementById('form-' + formName).classList.add('active');
+        btn.classList.add('active');
+    }
+
+    // --- 1. LOGIN (Existing) ---
+    function loginUser() {
+        const room = document.getElementById('log-room').value.trim();
+        const pin = document.getElementById('log-pin').value.trim();
+
+        if(!room || !pin) { alert("Enter Room Code and PIN"); return; }
+
+        // Check if user exists in that room
+        const userRef = db.ref('chats/' + room + '/users/' + pin);
+        
+        userRef.once('value', snapshot => {
+            if(snapshot.exists()) {
+                const data = snapshot.val();
+                if(data.banned) {
+                    alert("You are BANNED from this room.");
+                    return;
+                }
+                // Success
+                loadChat(room, pin, data.name, data.role);
+            } else {
+                alert("Invalid PIN or Room does not exist.");
+            }
+        });
+    }
+
+    // --- 2. JOIN NEW (Member) ---
+    function joinRoom() {
+        const name = document.getElementById('join-name').value.trim();
+        const room = document.getElementById('join-room').value.trim();
+
+        if(!name || !room) { alert("Fill all fields"); return; }
+
+        // Check if room exists
+        db.ref('chats/' + room).once('value', snapshot => {
+            if(!snapshot.exists()) {
+                alert("Room does not exist! Ask admin for correct code.");
+                return;
+            }
+
+            // Generate 4 Digit PIN
+            const pin = Math.floor(1000 + Math.random() * 9000).toString();
+            
+            // Save User
+            db.ref('chats/' + room + '/users/' + pin).set({
+                name: name,
+                role: 'member',
+                banned: false
+            }).then(() => {
+                showPinModal(pin, 'member', room, name);
+            });
+        });
+    }
+
+    // --- 3. CREATE ROOM (Admin) ---
+    function createRoom() {
+        const name = document.getElementById('create-name').value.trim();
+        const room = document.getElementById('create-room').value.trim();
+
+        if(!name || !room) { alert("Fill all fields"); return; }
+
+        // Check if room already taken
+        db.ref('chats/' + room).once('value', snapshot => {
+            if(snapshot.exists()) {
+                alert("Room Code already taken! Try another.");
+                return;
+            }
+
+            // Generate 5 Digit PIN for Admin
+            const pin = Math.floor(10000 + Math.random() * 90000).toString();
+
+            // Save Admin User & Meta Data
+            const updates = {};
+            updates['chats/' + room + '/meta'] = { createdBy: pin, createdOn: Date.now() };
+            updates['chats/' + room + '/users/' + pin] = { name: name, role: 'admin', banned: false };
+
+            db.ref().update(updates).then(() => {
+                showPinModal(pin, 'admin', room, name);
+            });
+        });
+    }
+
+    // --- PIN MODAL LOGIC ---
+    function showPinModal(pin, role, room, name) {
+        myPIN = pin;
+        currentRoom = room;
+        myName = name;
+        amIAdmin = (role === 'admin');
+
+        const overlay = document.getElementById('pin-overlay');
+        document.getElementById('generated-pin').innerText = pin;
+        
+        const badge = document.getElementById('role-display');
+        badge.innerText = role.toUpperCase();
+        badge.style.background = (role === 'admin') ? '#ef4444' : '#22c55e';
+
+        overlay.style.display = 'flex';
+    }
+
+    function enterChatFromModal() {
+        document.getElementById('pin-overlay').style.display = 'none';
+        loadChat(currentRoom, myPIN, myName, amIAdmin ? 'admin' : 'member');
+    }
+
+    // --- LOAD CHAT ---
+    function loadChat(room, pin, name, role) {
+        currentRoom = room;
+        myPIN = pin;
+        myName = name;
+        amIAdmin = (role === 'admin');
+
+        // Switch UI
+        document.getElementById('auth-view').style.display = 'none';
+        document.getElementById('chat-view').style.display = 'flex';
+
+        // Update Header
+        document.getElementById('room-id-display').innerText = room;
+        const badge = document.getElementById('user-role-badge');
+        badge.innerText = role === 'admin' ? "ADMIN" : "GENERAL";
+        badge.className = `status-badge ${role === 'admin' ? 'badge-admin' : 'badge-general'}`;
+
+        // Show Admin Controls
+        if(amIAdmin) {
+            document.getElementById('btn-delete-room').style.display = 'flex';
+        }
+
+        listenData();
+    }
+
+    // --- MESSAGING ---
+    function sendMessage() {
+        const text = document.getElementById('msg-input').value;
+        if(!text.trim()) return;
+
+        db.ref('chats/' + currentRoom + '/messages').push({
+            sender: myName,
+            senderPin: myPIN,
+            text: text,
+            timestamp: Date.now()
+        });
+        document.getElementById('msg-input').value = "";
+    }
+
+    // --- ADMIN ACTIONS ---
+    function deleteRoom() {
+        if(confirm("DANGER: This will delete the room and all messages permanently. Continue?")) {
+            db.ref('chats/' + currentRoom).remove().then(() => {
+                alert("Room Deleted.");
+                location.reload();
+            });
+        }
+    }
+
+    function deleteMessage(key) {
+        if(confirm("Delete this message?")) {
+            db.ref('chats/' + currentRoom + '/messages/' + key).remove();
+        }
+    }
+
+    function banUser(targetPin, targetName) {
+        if(confirm(`Ban ${targetName} permanently?`)) {
+            db.ref('chats/' + currentRoom + '/users/' + targetPin + '/banned').set(true);
+            db.ref('chats/' + currentRoom + '/messages').push({
+                system: true,
+                text: `🚫 ${targetName} was banned by Admin.`
+            });
+        }
+    }
+
+    // --- LISTENERS ---
+    function listenData() {
+        const msgRef = db.ref('chats/' + currentRoom + '/messages');
+        
+        // 1. Messages
+        msgRef.on('child_added', snapshot => {
+            renderMessage(snapshot.key, snapshot.val());
+        });
+
+        msgRef.on('child_removed', snapshot => {
+            const el = document.getElementById(snapshot.key);
+            if(el) el.remove();
+        });
+
+        // 2. Room Deletion Check
+        db.ref('chats/' + currentRoom).on('value', snapshot => {
+            if(!snapshot.exists()) {
+                alert("Room has been deleted by Admin.");
+                location.reload();
+            }
+        });
+
+        // 3. Ban Check
+        db.ref('chats/' + currentRoom + '/users/' + myPIN + '/banned').on('value', snapshot => {
+            if(snapshot.val() === true) {
+                alert("You have been BANNED.");
+                location.reload();
+            }
+        });
+    }
+
+    function renderMessage(key, data) {
+        const list = document.getElementById('messages-list');
+        const div = document.createElement('div');
+        div.id = key;
+
+        if(data.system) {
+            div.className = 'sys-msg';
+            div.innerText = data.text;
+            list.appendChild(div);
+            return;
+        }
+
+        const isMe = data.senderPin === myPIN;
+        div.className = `msg ${isMe ? 'sent' : 'received'}`;
+
+        let deleteHtml = "";
+        // Admin can delete ANY message. Users can delete their OWN.
+        if(amIAdmin || isMe) {
+            deleteHtml = `<div class="del-icon" onclick="deleteMessage('${key}')">×</div>`;
+        }
+
+        // Admin can click name to ban (except self)
+        let nameHtml = `<span class="sender-name">${data.sender}</span>`;
+        if(amIAdmin && !isMe) {
+            nameHtml = `<span class="sender-name" style="color:#ef4444; cursor:pointer;" onclick="banUser('${data.senderPin}', '${data.sender}')">${data.sender} (BAN)</span>`;
+        }
+        if(isMe) nameHtml = ""; // Don't show my own name
+
+        div.innerHTML = `
+            ${!isMe ? nameHtml : ''}
+            <div class="bubble">
+                ${deleteHtml}
+                ${data.text}
+            </div>
+        `;
+
+        list.appendChild(div);
+        list.scrollTop = list.scrollHeight;
+    }
+
+    // Enter Key
+    document.getElementById('msg-input').addEventListener("keypress", (e) => {
+        if(e.key === "Enter") sendMessage();
+    });
+
+</script>
+</body>
+</html>
